@@ -1,0 +1,29 @@
+# github.com/amitbet/dicom v1.0.7
+## explicit; go 1.18
+github.com/amitbet/dicom
+github.com/amitbet/dicom/pkg/charset
+github.com/amitbet/dicom/pkg/debug
+github.com/amitbet/dicom/pkg/dicomio
+github.com/amitbet/dicom/pkg/frame
+github.com/amitbet/dicom/pkg/tag
+github.com/amitbet/dicom/pkg/uid
+github.com/amitbet/dicom/pkg/vrraw
+# golang.org/x/text v0.3.8
+## explicit; go 1.17
+golang.org/x/text/encoding
+golang.org/x/text/encoding/charmap
+golang.org/x/text/encoding/htmlindex
+golang.org/x/text/encoding/internal
+golang.org/x/text/encoding/internal/identifier
+golang.org/x/text/encoding/japanese
+golang.org/x/text/encoding/korean
+golang.org/x/text/encoding/simplifiedchinese
+golang.org/x/text/encoding/traditionalchinese
+golang.org/x/text/encoding/unicode
+golang.org/x/text/internal/language
+golang.org/x/text/internal/language/compact
+golang.org/x/text/internal/tag
+golang.org/x/text/internal/utf8internal
+golang.org/x/text/language
+golang.org/x/text/runes
+golang.org/x/text/transform

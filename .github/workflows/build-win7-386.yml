@@ -1,0 +1,53 @@
+name: Build Win7 32-bit EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-windows-386:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go 1.20
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.20.14'
+          check-latest: false
+
+      - name: Show Go version
+        run: go version
+
+      - name: Build windows/386 executable
+        env:
+          GOOS: windows
+          GOARCH: 386
+          CGO_ENABLED: 0
+        run: |
+          go build -mod=vendor -o dicom_cleaner.exe ./cmd/dicomcleaner
+
+      - name: Package release files
+        run: |
+          mkdir -p release
+          cp dicom_cleaner.exe release/
+          cp run_cleaner_full.bat release/
+          cp run_cleaner_simple.bat release/
+          cp README.md release/
+          cd release
+          zip -r ../dicom-cleaner-win7-386.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dicom-cleaner-win7-386
+          path: |
+            dicom_cleaner.exe
+            run_cleaner_full.bat
+            run_cleaner_simple.bat
+            dicom-cleaner-win7-386.zip
