@@ -3,7 +3,7 @@
 .gomodcache/
 .idea/
 __pycache__/
-dicomcleaner
-dicom_cleaner.exe
+/dicomcleaner
+/dicom_cleaner.exe
 logs/
 *.tmp
