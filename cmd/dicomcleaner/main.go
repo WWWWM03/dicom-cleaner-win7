@@ -302,15 +302,16 @@ func rewriteWithoutSpecificCharacterSet(path string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
 
 	tmpPath := path + ".tmp"
 	dst, err := os.Create(tmpPath)
 	if err != nil {
+		_ = src.Close()
 		return err
 	}
 
 	cleanup := func(e error) error {
+		_ = src.Close()
 		_ = dst.Close()
 		_ = os.Remove(tmpPath)
 		return e
@@ -376,9 +377,20 @@ func rewriteWithoutSpecificCharacterSet(path string) error {
 		return cleanup(err)
 	}
 	if !removed {
+		_ = src.Close()
 		_ = os.Remove(tmpPath)
 		return nil
 	}
+
+	if err := src.Close(); err != nil {
+		return cleanup(err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
