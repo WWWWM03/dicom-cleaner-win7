@@ -62,13 +62,21 @@ type transferSyntax struct {
 	little     bool
 }
 
+type elementHeader struct {
+	group     uint16
+	element   uint16
+	headerLen int
+	valueLen  uint32
+	raw       []byte
+}
+
 func parseFlags() config {
-	defaultJobs := runtime.NumCPU() * 2
+	defaultJobs := runtime.NumCPU()
 	if defaultJobs < 1 {
-		defaultJobs = 4
+		defaultJobs = 1
 	}
-	if defaultJobs > 32 {
-		defaultJobs = 32
+	if defaultJobs > 2 {
+		defaultJobs = 2
 	}
 
 	cfg := config{}
@@ -150,20 +158,6 @@ func hasDICMPreamble(path string) bool {
 	return string(header[128:132]) == "DICM"
 }
 
-func uint16At(data []byte, off int, little bool) uint16 {
-	if little {
-		return binary.LittleEndian.Uint16(data[off : off+2])
-	}
-	return binary.BigEndian.Uint16(data[off : off+2])
-}
-
-func uint32At(data []byte, off int, little bool) uint32 {
-	if little {
-		return binary.LittleEndian.Uint32(data[off : off+4])
-	}
-	return binary.BigEndian.Uint32(data[off : off+4])
-}
-
 func isLongVR(vr string) bool {
 	switch vr {
 	case "OB", "OD", "OF", "OL", "OV", "OW", "SQ", "UC", "UR", "UT", "UN":
@@ -173,139 +167,72 @@ func isLongVR(vr string) bool {
 	}
 }
 
-func detectTransferSyntax(data []byte) (transferSyntax, int, error) {
-	syntax := transferSyntax{explicitVR: true, little: true}
-	offset := 132
-	for {
-		if offset+8 > len(data) {
-			return syntax, offset, nil
-		}
-		group := binary.LittleEndian.Uint16(data[offset : offset+2])
-		element := binary.LittleEndian.Uint16(data[offset+2 : offset+4])
-		if group != 0x0002 {
-			return syntax, offset, nil
-		}
+func readExactly(r io.Reader, n int) ([]byte, error) {
+	buf := make([]byte, n)
+	_, err := io.ReadFull(r, buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
 
-		vr := string(data[offset+4 : offset+6])
-		headerLen := 8
-		valueLen := uint32(binary.LittleEndian.Uint16(data[offset+6 : offset+8]))
+func readElementHeader(r io.Reader, syntax transferSyntax) (elementHeader, error) {
+	base, err := readExactly(r, 8)
+	if err != nil {
+		return elementHeader{}, err
+	}
+
+	h := elementHeader{headerLen: 8, raw: base}
+	if syntax.little {
+		h.group = binary.LittleEndian.Uint16(base[0:2])
+		h.element = binary.LittleEndian.Uint16(base[2:4])
+	} else {
+		h.group = binary.BigEndian.Uint16(base[0:2])
+		h.element = binary.BigEndian.Uint16(base[2:4])
+	}
+
+	if syntax.explicitVR {
+		vr := string(base[4:6])
 		if isLongVR(vr) {
-			if offset+12 > len(data) {
-				return syntax, 0, fmt.Errorf("DICOM 文件头不完整")
+			extra, extraErr := readExactly(r, 4)
+			if extraErr != nil {
+				return elementHeader{}, extraErr
 			}
-			headerLen = 12
-			valueLen = binary.LittleEndian.Uint32(data[offset+8 : offset+12])
-		}
-
-		end := offset + headerLen + int(valueLen)
-		if end > len(data) {
-			return syntax, 0, fmt.Errorf("DICOM 文件头长度异常")
-		}
-
-		if group == 0x0002 && element == 0x0010 {
-			uid := strings.TrimRight(string(data[offset+headerLen:end]), "\x00 ")
-			switch uid {
-			case "1.2.840.10008.1.2":
-				syntax = transferSyntax{explicitVR: false, little: true}
-			case "1.2.840.10008.1.2.2":
-				syntax = transferSyntax{explicitVR: true, little: false}
-			default:
-				syntax = transferSyntax{explicitVR: true, little: true}
-			}
-		}
-		offset = end
-	}
-}
-
-func findSpecificCharacterSetElement(data []byte) (int, int, bool, error) {
-	if len(data) < 132 || string(data[128:132]) != "DICM" {
-		return 0, 0, false, nil
-	}
-
-	syntax, offset, err := detectTransferSyntax(data)
-	if err != nil {
-		return 0, 0, false, err
-	}
-
-	for {
-		if offset+8 > len(data) {
-			return 0, 0, false, nil
-		}
-
-		group := uint16At(data, offset, syntax.little)
-		element := uint16At(data, offset+2, syntax.little)
-
-		if group == 0x7FE0 && element == 0x0010 {
-			return 0, 0, false, nil
-		}
-
-		headerLen := 8
-		valueLen := uint32At(data, offset+4, syntax.little)
-
-		if syntax.explicitVR {
-			if offset+8 > len(data) {
-				return 0, 0, false, fmt.Errorf("DICOM 标签头不完整")
-			}
-			vr := string(data[offset+4 : offset+6])
-			if isLongVR(vr) {
-				if offset+12 > len(data) {
-					return 0, 0, false, fmt.Errorf("DICOM 长 VR 标签头不完整")
-				}
-				headerLen = 12
-				valueLen = uint32At(data, offset+8, syntax.little)
+			h.headerLen = 12
+			h.raw = append(h.raw, extra...)
+			if syntax.little {
+				h.valueLen = binary.LittleEndian.Uint32(extra)
 			} else {
-				valueLen = uint32(uint16At(data, offset+6, syntax.little))
+				h.valueLen = binary.BigEndian.Uint32(extra)
 			}
+			return h, nil
 		}
-
-		end := offset + headerLen + int(valueLen)
-		if end > len(data) {
-			return 0, 0, false, fmt.Errorf("DICOM 标签长度异常，无法安全删除目标标签")
+		if syntax.little {
+			h.valueLen = uint32(binary.LittleEndian.Uint16(base[6:8]))
+		} else {
+			h.valueLen = uint32(binary.BigEndian.Uint16(base[6:8]))
 		}
-
-		if group == 0x0008 && element == 0x0005 {
-			return offset, end, true, nil
-		}
-
-		offset = end
+		return h, nil
 	}
+
+	if syntax.little {
+		h.valueLen = binary.LittleEndian.Uint32(base[4:8])
+	} else {
+		h.valueLen = binary.BigEndian.Uint32(base[4:8])
+	}
+	return h, nil
 }
 
-func removeSpecificCharacterSet(path string, dryRun bool) (string, error) {
-	if !hasDICMPreamble(path) {
-		return "non_dicom", nil
+func determineSyntaxFromUID(value []byte) transferSyntax {
+	uid := strings.TrimRight(string(value), "\x00 ")
+	switch uid {
+	case "1.2.840.10008.1.2":
+		return transferSyntax{explicitVR: false, little: true}
+	case "1.2.840.10008.1.2.2":
+		return transferSyntax{explicitVR: true, little: false}
+	default:
+		return transferSyntax{explicitVR: true, little: true}
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "error", err
-	}
-
-	start, end, found, err := findSpecificCharacterSetElement(data)
-	if err != nil {
-		return "error", err
-	}
-	if !found {
-		return "unchanged", nil
-	}
-	if dryRun {
-		return "would_update", nil
-	}
-
-	updated := make([]byte, 0, len(data)-(end-start))
-	updated = append(updated, data[:start]...)
-	updated = append(updated, data[end:]...)
-
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, updated, 0o644); err != nil {
-		_ = os.Remove(tmpPath)
-		return "error", err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return "error", err
-	}
-	return "updated", nil
 }
 
 func formatErrorMessage(err error) string {
@@ -321,6 +248,163 @@ func formatErrorMessage(err error) string {
 		return "文件无法写入，可能被占用或没有权限。"
 	}
 	return msg
+}
+
+func scanForSpecificCharacterSet(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	preamble, err := readExactly(file, 132)
+	if err != nil {
+		return false, nil
+	}
+	if string(preamble[128:132]) != "DICM" {
+		return false, nil
+	}
+
+	syntax := transferSyntax{explicitVR: true, little: true}
+	for {
+		h, headerErr := readElementHeader(file, syntax)
+		if errors.Is(headerErr, io.EOF) || errors.Is(headerErr, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		if headerErr != nil {
+			return false, headerErr
+		}
+
+		if h.group == 0x7FE0 && h.element == 0x0010 {
+			return false, nil
+		}
+
+		if h.valueLen > 64*1024*1024 {
+			return false, fmt.Errorf("发现超大标签值(%d字节)，为避免32位内存溢出，停止处理该文件", h.valueLen)
+		}
+
+		value, valueErr := readExactly(file, int(h.valueLen))
+		if valueErr != nil {
+			return false, valueErr
+		}
+
+		if h.group == 0x0002 && h.element == 0x0010 {
+			syntax = determineSyntaxFromUID(value)
+		}
+		if h.group == 0x0008 && h.element == 0x0005 {
+			return true, nil
+		}
+	}
+}
+
+func rewriteWithoutSpecificCharacterSet(path string) error {
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	tmpPath := path + ".tmp"
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	cleanup := func(e error) error {
+		_ = dst.Close()
+		_ = os.Remove(tmpPath)
+		return e
+	}
+
+	preamble, err := readExactly(src, 132)
+	if err != nil {
+		return cleanup(err)
+	}
+	if _, err := dst.Write(preamble); err != nil {
+		return cleanup(err)
+	}
+
+	syntax := transferSyntax{explicitVR: true, little: true}
+	removed := false
+
+	for {
+		h, headerErr := readElementHeader(src, syntax)
+		if errors.Is(headerErr, io.EOF) {
+			break
+		}
+		if headerErr != nil {
+			return cleanup(headerErr)
+		}
+
+		if h.group == 0x7FE0 && h.element == 0x0010 {
+			if _, err := dst.Write(h.raw); err != nil {
+				return cleanup(err)
+			}
+			if _, err := io.Copy(dst, src); err != nil {
+				return cleanup(err)
+			}
+			break
+		}
+
+		if h.valueLen > 64*1024*1024 {
+			return cleanup(fmt.Errorf("发现超大标签值(%d字节)，为避免32位内存溢出，停止处理该文件", h.valueLen))
+		}
+
+		value, valueErr := readExactly(src, int(h.valueLen))
+		if valueErr != nil {
+			return cleanup(valueErr)
+		}
+
+		if h.group == 0x0002 && h.element == 0x0010 {
+			syntax = determineSyntaxFromUID(value)
+		}
+
+		if h.group == 0x0008 && h.element == 0x0005 {
+			removed = true
+			continue
+		}
+
+		if _, err := dst.Write(h.raw); err != nil {
+			return cleanup(err)
+		}
+		if _, err := dst.Write(value); err != nil {
+			return cleanup(err)
+		}
+	}
+
+	if err := dst.Close(); err != nil {
+		return cleanup(err)
+	}
+	if !removed {
+		_ = os.Remove(tmpPath)
+		return nil
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func removeSpecificCharacterSet(path string, dryRun bool) (string, error) {
+	if !hasDICMPreamble(path) {
+		return "non_dicom", nil
+	}
+
+	found, err := scanForSpecificCharacterSet(path)
+	if err != nil {
+		return "error", err
+	}
+	if !found {
+		return "unchanged", nil
+	}
+	if dryRun {
+		return "would_update", nil
+	}
+	if err := rewriteWithoutSpecificCharacterSet(path); err != nil {
+		return "error", err
+	}
+	return "updated", nil
 }
 
 func worker(jobs <-chan job, results chan<- result, dryRun bool) {
